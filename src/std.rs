@@ -9,9 +9,9 @@ use std::thread::{JoinHandle, spawn};
 
 #[derive(Debug)]
 pub struct Blocking<T> {
-	thread: Option<JoinHandle<()>>,
 	queue: Arc<ArrayQueue<Result<T, Box<dyn Any + Send>>>>,
 	waker: Arc<AtomicWaker>,
+	thread: Option<JoinHandle<()>>,
 }
 
 pub fn blocking<F, T>(func: F) -> Blocking<T>
@@ -29,9 +29,9 @@ where
 	}));
 
 	Blocking {
-		thread,
-		waker,
 		queue,
+		waker,
+		thread,
 	}
 }
 
