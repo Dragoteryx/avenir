@@ -43,14 +43,6 @@ impl<T> Blocking<T> {
 	}
 }
 
-impl<T> Drop for Blocking<T> {
-	fn drop(&mut self) {
-		if let Some(thread) = self.thread.take() {
-			let _ = thread.join();
-		}
-	}
-}
-
 impl<T> Future for Blocking<T> {
 	type Output = T;
 
@@ -60,6 +52,14 @@ impl<T> Future for Blocking<T> {
 			Some(Ok(value)) => Poll::Ready(value),
 			Some(Err(err)) => resume_unwind(err),
 			None => Poll::Pending,
+		}
+	}
+}
+
+impl<T> Drop for Blocking<T> {
+	fn drop(&mut self) {
+		if let Some(thread) = self.thread.take() {
+			let _ = thread.join();
 		}
 	}
 }

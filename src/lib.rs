@@ -22,22 +22,22 @@ pub use std::*;
 
 #[cfg(feature = "std")]
 pub fn spawn<F: IntoFuture + 'static>(future: F) -> JoinHandle<F::Output> {
-	Executor::thread_local(|executor| executor.spawn(future))
+	Executor::local(|executor| executor.spawn(future))
 }
 
 #[cfg(feature = "std")]
 pub fn poll() -> usize {
-	Executor::thread_local(|executor| executor.poll())
+	Executor::local(|executor| executor.poll())
 }
 
 #[cfg(feature = "std")]
 pub fn count() -> usize {
-	Executor::thread_local(|executor| executor.count())
+	Executor::local(|executor| executor.count())
 }
 
 #[cfg(feature = "std")]
 pub fn clear() -> usize {
-	Executor::thread_local(|executor| executor.clear())
+	Executor::local(|executor| executor.clear())
 }
 
 #[derive(Default)]
@@ -49,7 +49,7 @@ pub struct Executor<'f> {
 
 impl Executor<'static> {
 	#[cfg(feature = "std")]
-	pub fn thread_local<T>(func: impl FnOnce(&Self) -> T) -> T {
+	pub fn local<T>(func: impl FnOnce(&Self) -> T) -> T {
 		thread_local! {
 			static EXECUTOR: Executor<'static> = Executor::new();
 		}
