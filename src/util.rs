@@ -6,7 +6,7 @@ pub const fn yield_now() -> YieldNow {
 }
 
 #[repr(transparent)]
-#[derive(Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct YieldNow {
 	ready: bool,
 }
