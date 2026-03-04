@@ -1,14 +1,14 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-pub const fn yield_now() -> YieldNow {
-	YieldNow { ready: false }
-}
-
 #[repr(transparent)]
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct YieldNow {
 	ready: bool,
+}
+
+pub const fn yield_now() -> YieldNow {
+	YieldNow { ready: false }
 }
 
 impl Future for YieldNow {
