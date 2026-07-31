@@ -13,13 +13,13 @@ use futures::future::LocalBoxFuture;
 use futures::task::AtomicWaker;
 
 #[cfg(feature = "std")]
-pub fn spawn<F: IntoFuture + 'static>(future: F) -> JoinHandle<F::Output> {
+pub fn spawn<F: IntoFuture + 'static>(future: F) -> Task<F::Output> {
 	Executor::local(|executor| executor.spawn(future))
 }
 
 #[cfg(feature = "std")]
-pub fn poll() -> usize {
-	Executor::local(|executor| executor.poll())
+pub fn tick() -> usize {
+	Executor::local(|executor| executor.tick())
 }
 
 #[cfg(feature = "std")]
@@ -46,7 +46,7 @@ impl Executor<'static> {
 			static EXECUTOR: Executor<'static> = Executor::new();
 		}
 
-		EXECUTOR.with(|executor| func(executor))
+		EXECUTOR.with(func)
 	}
 }
 
@@ -59,7 +59,7 @@ impl<'f> Executor<'f> {
 		}
 	}
 
-	pub fn spawn<F: IntoFuture + 'f>(&self, future: F) -> JoinHandle<F::Output> {
+	pub fn spawn<F: IntoFuture + 'f>(&self, future: F) -> Task<F::Output> {
 		let queue = Arc::new(ArrayQueue::new(1));
 		let waker = Arc::new(AtomicWaker::new());
 		let queue_clone = queue.clone();
@@ -68,10 +68,10 @@ impl<'f> Executor<'f> {
 			let _ = queue_clone.push(future.await);
 			waker_clone.wake();
 		}));
-		JoinHandle { queue, waker }
+		Task { queue, waker }
 	}
 
-	pub fn poll(&self) -> usize {
+	pub fn tick(&self) -> usize {
 		let mut polled = BTreeSet::new();
 		while let Some(id) = self.queue.pop() {
 			if polled.insert(id) {
@@ -138,12 +138,12 @@ impl<'f> Debug for Executor<'f> {
 }
 
 #[derive(Debug)]
-pub struct JoinHandle<T> {
+pub struct Task<T> {
 	queue: Arc<ArrayQueue<T>>,
 	waker: Arc<AtomicWaker>,
 }
 
-impl<T> Future for JoinHandle<T> {
+impl<T> Future for Task<T> {
 	type Output = T;
 
 	fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {

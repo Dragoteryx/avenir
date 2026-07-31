@@ -24,7 +24,8 @@ where
 	let queue_clone = queue.clone();
 	let waker_clone = waker.clone();
 	let thread = Some(spawn(move || {
-		let _ = queue_clone.push(catch_unwind(AssertUnwindSafe(func)));
+		let func = AssertUnwindSafe(func);
+		let _ = queue_clone.push(catch_unwind(func));
 		waker_clone.wake();
 	}));
 
