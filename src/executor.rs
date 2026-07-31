@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::task::Wake;
 use core::cell::{Cell, RefCell};
@@ -20,6 +20,11 @@ pub fn spawn<F: IntoFuture + 'static>(future: F) -> Task<F::Output> {
 #[cfg(feature = "std")]
 pub fn tick() -> usize {
 	Executor::local(|executor| executor.tick())
+}
+
+#[cfg(feature = "std")]
+pub fn try_tick() -> bool {
+	Executor::local(|executor| executor.try_tick())
 }
 
 #[cfg(feature = "std")]
@@ -72,14 +77,20 @@ impl<'f> Executor<'f> {
 	}
 
 	pub fn tick(&self) -> usize {
-		let mut polled = BTreeSet::new();
-		while let Some(id) = self.queue.pop() {
-			if polled.insert(id) {
-				self.poll_task(id);
-			}
+		let mut count = 0;
+		while self.try_tick() {
+			count += 1;
 		}
+		count
+	}
 
-		polled.len()
+	pub fn try_tick(&self) -> bool {
+		if let Some(id) = self.queue.pop() {
+			self.poll_task(id);
+			true
+		} else {
+			false
+		}
 	}
 
 	pub fn count(&self) -> usize {
