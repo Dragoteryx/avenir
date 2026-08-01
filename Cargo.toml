@@ -7,6 +7,14 @@ edition = "2024"
 default = ["std"]
 std = []
 
+[dependencies.hashbrown]
+default-features = false
+version = "0.17"
+
+[dependencies.nohash-hasher]
+default-features = false
+version = "0.2"
+
 [dependencies.crossbeam-queue]
 default-features = false
 features = ["alloc"]

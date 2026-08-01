@@ -9,6 +9,3 @@ pub use thread::*;
 
 mod executor;
 pub use executor::*;
-
-mod util;
-pub use util::*;

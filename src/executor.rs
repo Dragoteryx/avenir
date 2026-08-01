@@ -1,16 +1,18 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::task::Wake;
 use core::cell::{Cell, RefCell};
 use core::fmt::{self, Debug};
 use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, Waker};
-use crossbeam_queue::{ArrayQueue, SegQueue};
+use crossbeam_queue::SegQueue;
+use futures::channel::oneshot::*;
 use futures::future::LocalBoxFuture;
-use futures::task::AtomicWaker;
+use hashbrown::HashMap;
+use nohash_hasher::BuildNoHashHasher;
 
 #[cfg(feature = "std")]
 pub fn spawn<F: IntoFuture + 'static>(future: F) -> Task<F::Output> {
@@ -19,28 +21,29 @@ pub fn spawn<F: IntoFuture + 'static>(future: F) -> Task<F::Output> {
 
 #[cfg(feature = "std")]
 pub fn tick() -> usize {
-	Executor::local(|executor| executor.tick())
+	Executor::local(Executor::tick)
 }
 
 #[cfg(feature = "std")]
 pub fn try_tick() -> bool {
-	Executor::local(|executor| executor.try_tick())
+	Executor::local(Executor::try_tick)
 }
 
 #[cfg(feature = "std")]
 pub fn count() -> usize {
-	Executor::local(|executor| executor.count())
+	Executor::local(Executor::count)
 }
 
 #[cfg(feature = "std")]
 pub fn clear() -> usize {
-	Executor::local(|executor| executor.clear())
+	Executor::local(Executor::clear)
 }
 
 #[derive(Default)]
 pub struct Executor<'f> {
-	tasks: RefCell<BTreeMap<u64, LocalBoxFuture<'f, ()>>>,
+	tasks: RefCell<HashMap<u64, LocalBoxFuture<'f, ()>, BuildNoHashHasher<u64>>>,
 	queue: Arc<SegQueue<u64>>,
+	detach: Arc<SegQueue<u64>>,
 	next_id: Cell<u64>,
 }
 
@@ -57,23 +60,22 @@ impl Executor<'static> {
 
 impl<'f> Executor<'f> {
 	pub fn new() -> Self {
-		Self {
-			tasks: RefCell::new(BTreeMap::new()),
-			queue: Arc::new(SegQueue::new()),
-			next_id: Cell::new(0),
-		}
+		Self::default()
 	}
 
 	pub fn spawn<F: IntoFuture + 'f>(&self, future: F) -> Task<F::Output> {
-		let queue = Arc::new(ArrayQueue::new(1));
-		let waker = Arc::new(AtomicWaker::new());
-		let queue_clone = queue.clone();
-		let waker_clone = waker.clone();
-		self.poll_task(self.add_task(async move {
-			let _ = queue_clone.push(future.await);
-			waker_clone.wake();
-		}));
-		Task { queue, waker }
+		let (sender, receiver) = channel();
+		let detach = Some(self.detach.clone());
+		let id = self.add_task(async move {
+			let _ = sender.send(future.await);
+		});
+
+		self.poll_task(id);
+		Task {
+			receiver,
+			detach,
+			id,
+		}
 	}
 
 	pub fn tick(&self) -> usize {
@@ -85,6 +87,8 @@ impl<'f> Executor<'f> {
 	}
 
 	pub fn try_tick(&self) -> bool {
+		self.drop_detached();
+
 		if let Some(id) = self.queue.pop() {
 			self.poll_task(id);
 			true
@@ -112,14 +116,17 @@ impl<'f> Executor<'f> {
 	}
 
 	fn poll_task(&self, id: u64) {
-		struct TaskWake {
+		struct WakeTask {
 			queue: Arc<SegQueue<u64>>,
+			scheduled: AtomicBool,
 			id: u64,
 		}
 
-		impl Wake for TaskWake {
+		impl Wake for WakeTask {
 			fn wake_by_ref(self: &Arc<Self>) {
-				let _ = self.queue.push(self.id);
+				if !self.scheduled.swap(true, Ordering::AcqRel) {
+					let _ = self.queue.push(self.id);
+				}
 			}
 
 			fn wake(self: Arc<Self>) {
@@ -129,39 +136,69 @@ impl<'f> Executor<'f> {
 
 		let task = self.tasks.borrow_mut().remove(&id);
 		if let Some(mut task) = task {
-			let queue = self.queue.clone();
-			let waker = Waker::from(Arc::new(TaskWake { queue, id }));
+			let wake_task = WakeTask {
+				queue: self.queue.clone(),
+				scheduled: AtomicBool::new(false),
+				id,
+			};
+
+			let waker = Waker::from(Arc::new(wake_task));
 			let mut context = Context::from_waker(&waker);
 			if task.as_mut().poll(&mut context).is_pending() {
 				self.tasks.borrow_mut().insert(id, task);
 			}
 		}
 	}
+
+	fn drop_detached(&self) {
+		if !self.detach.is_empty() {
+			let mut tasks = self.tasks.borrow_mut();
+			while let Some(id) = self.detach.pop() {
+				tasks.remove(&id);
+			}
+		}
+	}
 }
 
 impl<'f> Debug for Executor<'f> {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.debug_struct("Executor")
-			.field("queue", &self.queue)
-			.field("next_id", &self.next_id.get())
+			.field("tasks", &self.count())
 			.finish()
 	}
 }
 
 #[derive(Debug)]
 pub struct Task<T> {
-	queue: Arc<ArrayQueue<T>>,
-	waker: Arc<AtomicWaker>,
+	detach: Option<Arc<SegQueue<u64>>>,
+	receiver: Receiver<T>,
+	id: u64,
+}
+
+impl<T> Task<T> {
+	#[inline]
+	pub fn detach(mut self) {
+		self.detach.take();
+	}
 }
 
 impl<T> Future for Task<T> {
 	type Output = T;
 
-	fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-		self.waker.register(cx.waker());
-		match self.queue.pop() {
-			Some(value) => Poll::Ready(value),
-			None => Poll::Pending,
+	#[track_caller]
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+		match Pin::new(&mut self.receiver).poll(cx) {
+			Poll::Ready(Err(_)) => panic!("Task has been dropped"),
+			Poll::Ready(Ok(value)) => Poll::Ready(value),
+			Poll::Pending => Poll::Pending,
+		}
+	}
+}
+
+impl<T> Drop for Task<T> {
+	fn drop(&mut self) {
+		if let Some(detach) = self.detach.take() {
+			let _ = detach.push(self.id);
 		}
 	}
 }

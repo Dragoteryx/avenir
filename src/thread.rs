@@ -1,16 +1,13 @@
-use crossbeam_queue::ArrayQueue;
-use futures::task::AtomicWaker;
+use futures::channel::oneshot::*;
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::thread::{JoinHandle, spawn};
 
 #[derive(Debug)]
 pub struct Blocking<T> {
-	queue: Arc<ArrayQueue<Result<T, Box<dyn Any + Send>>>>,
-	waker: Arc<AtomicWaker>,
+	receiver: Receiver<Result<T, Box<dyn Any + Send>>>,
 	thread: Option<JoinHandle<()>>,
 }
 
@@ -19,40 +16,33 @@ where
 	F: FnOnce() -> T + Send + 'static,
 	T: Send + 'static,
 {
-	let queue = Arc::new(ArrayQueue::new(1));
-	let waker = Arc::new(AtomicWaker::new());
-	let queue_clone = queue.clone();
-	let waker_clone = waker.clone();
+	let (sender, receiver) = channel();
 	let thread = Some(spawn(move || {
 		let func = AssertUnwindSafe(func);
-		let _ = queue_clone.push(catch_unwind(func));
-		waker_clone.wake();
+		let res = catch_unwind(func);
+		let _ = sender.send(res);
 	}));
 
-	Blocking {
-		queue,
-		waker,
-		thread,
-	}
+	Blocking { receiver, thread }
 }
 
 impl<T> Blocking<T> {
 	#[inline]
-	pub fn detach(mut self) -> Self {
+	pub fn detach(mut self) {
 		self.thread.take();
-		self
 	}
 }
 
 impl<T> Future for Blocking<T> {
 	type Output = T;
 
-	fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-		self.waker.register(cx.waker());
-		match self.queue.pop() {
-			Some(Ok(value)) => Poll::Ready(value),
-			Some(Err(err)) => resume_unwind(err),
-			None => Poll::Pending,
+	#[track_caller]
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+		match Pin::new(&mut self.receiver).poll(cx) {
+			Poll::Ready(Err(_)) => panic!("Thread has panicked"),
+			Poll::Ready(Ok(Ok(value))) => Poll::Ready(value),
+			Poll::Ready(Ok(Err(err))) => resume_unwind(err),
+			Poll::Pending => Poll::Pending,
 		}
 	}
 }
