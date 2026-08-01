@@ -30,8 +30,18 @@ pub fn try_tick() -> bool {
 }
 
 #[cfg(feature = "std")]
-pub fn count() -> usize {
-	Executor::local(Executor::count)
+pub fn tasks() -> usize {
+	Executor::local(Executor::tasks)
+}
+
+#[cfg(feature = "std")]
+pub fn scheduled() -> usize {
+	Executor::local(Executor::scheduled)
+}
+
+#[cfg(feature = "std")]
+pub fn cancelled() -> usize {
+	Executor::local(Executor::cancelled)
 }
 
 #[cfg(feature = "std")]
@@ -61,6 +71,18 @@ impl Executor<'static> {
 impl<'f> Executor<'f> {
 	pub fn new() -> Self {
 		Self::default()
+	}
+
+	pub fn tasks(&self) -> usize {
+		self.tasks.borrow().len()
+	}
+
+	pub fn scheduled(&self) -> usize {
+		self.scheduled.len()
+	}
+
+	pub fn cancelled(&self) -> usize {
+		self.cancelled.len()
 	}
 
 	pub fn spawn<F: IntoFuture + 'f>(&self, future: F) -> Task<F::Output> {
@@ -95,10 +117,6 @@ impl<'f> Executor<'f> {
 		} else {
 			false
 		}
-	}
-
-	pub fn count(&self) -> usize {
-		self.tasks.borrow().len()
 	}
 
 	pub fn clear(&self) -> usize {
@@ -163,7 +181,9 @@ impl<'f> Executor<'f> {
 impl<'f> Debug for Executor<'f> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.debug_struct("Executor")
-			.field("tasks", &self.count())
+			.field("tasks", &self.tasks())
+			.field("scheduled", &self.scheduled())
+			.field("cancelled", &self.cancelled())
 			.finish()
 	}
 }
