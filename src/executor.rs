@@ -177,8 +177,9 @@ pub struct Task<T> {
 
 impl<T> Task<T> {
 	#[inline]
-	pub fn detach(mut self) {
+	pub fn detach(mut self) -> Self {
 		self.cancelled.take();
+		self
 	}
 }
 

@@ -28,8 +28,9 @@ where
 
 impl<T> Blocking<T> {
 	#[inline]
-	pub fn detach(mut self) {
+	pub fn detach(mut self) -> Self {
 		self.thread.take();
+		self
 	}
 }
 
