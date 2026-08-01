@@ -1,4 +1,4 @@
-use futures::channel::oneshot::*;
+use futures_channel::oneshot::*;
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::Pin;

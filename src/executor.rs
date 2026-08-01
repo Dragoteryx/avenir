@@ -9,8 +9,8 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, Waker};
 use crossbeam_queue::SegQueue;
-use futures::channel::oneshot::*;
-use futures::future::LocalBoxFuture;
+use futures_channel::oneshot::*;
+use futures_core::future::LocalBoxFuture;
 use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
 
@@ -42,8 +42,8 @@ pub fn clear() -> usize {
 #[derive(Default)]
 pub struct Executor<'f> {
 	tasks: RefCell<HashMap<u64, LocalBoxFuture<'f, ()>, BuildNoHashHasher<u64>>>,
-	queue: Arc<SegQueue<u64>>,
-	detach: Arc<SegQueue<u64>>,
+	scheduled: Arc<SegQueue<u64>>,
+	cancelled: Arc<SegQueue<u64>>,
 	next_id: Cell<u64>,
 }
 
@@ -64,8 +64,8 @@ impl<'f> Executor<'f> {
 	}
 
 	pub fn spawn<F: IntoFuture + 'f>(&self, future: F) -> Task<F::Output> {
+		let cancelled = self.cancelled.clone();
 		let (sender, receiver) = channel();
-		let detach = Some(self.detach.clone());
 		let id = self.add_task(async move {
 			let _ = sender.send(future.await);
 		});
@@ -73,7 +73,7 @@ impl<'f> Executor<'f> {
 		self.poll_task(id);
 		Task {
 			receiver,
-			detach,
+			cancelled,
 			id,
 		}
 	}
@@ -87,9 +87,9 @@ impl<'f> Executor<'f> {
 	}
 
 	pub fn try_tick(&self) -> bool {
-		self.drop_detached();
+		self.drop_cancelled();
 
-		if let Some(id) = self.queue.pop() {
+		if let Some(id) = self.scheduled.pop() {
 			self.poll_task(id);
 			true
 		} else {
@@ -117,15 +117,15 @@ impl<'f> Executor<'f> {
 
 	fn poll_task(&self, id: u64) {
 		struct WakeTask {
-			queue: Arc<SegQueue<u64>>,
-			scheduled: AtomicBool,
+			scheduled: Arc<SegQueue<u64>>,
+			woken: AtomicBool,
 			id: u64,
 		}
 
 		impl Wake for WakeTask {
 			fn wake_by_ref(self: &Arc<Self>) {
-				if !self.scheduled.swap(true, Ordering::AcqRel) {
-					let _ = self.queue.push(self.id);
+				if !self.woken.swap(true, Ordering::AcqRel) {
+					let _ = self.scheduled.push(self.id);
 				}
 			}
 
@@ -137,8 +137,8 @@ impl<'f> Executor<'f> {
 		let task = self.tasks.borrow_mut().remove(&id);
 		if let Some(mut task) = task {
 			let wake_task = WakeTask {
-				queue: self.queue.clone(),
-				scheduled: AtomicBool::new(false),
+				scheduled: self.scheduled.clone(),
+				woken: AtomicBool::new(false),
 				id,
 			};
 
@@ -150,10 +150,10 @@ impl<'f> Executor<'f> {
 		}
 	}
 
-	fn drop_detached(&self) {
-		if !self.detach.is_empty() {
+	fn drop_cancelled(&self) {
+		if !self.cancelled.is_empty() {
 			let mut tasks = self.tasks.borrow_mut();
-			while let Some(id) = self.detach.pop() {
+			while let Some(id) = self.cancelled.pop() {
 				tasks.remove(&id);
 			}
 		}
@@ -170,15 +170,15 @@ impl<'f> Debug for Executor<'f> {
 
 #[derive(Debug)]
 pub struct Task<T> {
-	detach: Option<Arc<SegQueue<u64>>>,
+	cancelled: Arc<SegQueue<u64>>,
 	receiver: Receiver<T>,
 	id: u64,
 }
 
 impl<T> Task<T> {
 	#[inline]
-	pub fn detach(mut self) {
-		self.detach.take();
+	pub fn cancel(self) {
+		self.cancelled.push(self.id);
 	}
 }
 
@@ -191,14 +191,6 @@ impl<T> Future for Task<T> {
 			Poll::Ready(Err(_)) => panic!("Task has been dropped"),
 			Poll::Ready(Ok(value)) => Poll::Ready(value),
 			Poll::Pending => Poll::Pending,
-		}
-	}
-}
-
-impl<T> Drop for Task<T> {
-	fn drop(&mut self) {
-		if let Some(detach) = self.detach.take() {
-			let _ = detach.push(self.id);
 		}
 	}
 }
