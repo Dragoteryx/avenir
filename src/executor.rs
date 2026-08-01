@@ -64,7 +64,7 @@ impl<'f> Executor<'f> {
 	}
 
 	pub fn spawn<F: IntoFuture + 'f>(&self, future: F) -> Task<F::Output> {
-		let cancelled = self.cancelled.clone();
+		let cancelled = Some(self.cancelled.clone());
 		let (sender, receiver) = channel();
 		let id = self.add_task(async move {
 			let _ = sender.send(future.await);
@@ -170,15 +170,15 @@ impl<'f> Debug for Executor<'f> {
 
 #[derive(Debug)]
 pub struct Task<T> {
-	cancelled: Arc<SegQueue<u64>>,
+	cancelled: Option<Arc<SegQueue<u64>>>,
 	receiver: Receiver<T>,
 	id: u64,
 }
 
 impl<T> Task<T> {
 	#[inline]
-	pub fn cancel(self) {
-		self.cancelled.push(self.id);
+	pub fn detach(mut self) {
+		self.cancelled.take();
 	}
 }
 
@@ -191,6 +191,14 @@ impl<T> Future for Task<T> {
 			Poll::Ready(Err(_)) => panic!("Task has been dropped"),
 			Poll::Ready(Ok(value)) => Poll::Ready(value),
 			Poll::Pending => Poll::Pending,
+		}
+	}
+}
+
+impl<T> Drop for Task<T> {
+	fn drop(&mut self) {
+		if let Some(cancelled) = self.cancelled.take() {
+			let _ = cancelled.push(self.id);
 		}
 	}
 }
